@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -48,7 +49,7 @@ type AccessDetails struct {
 }
 
 type TokenFromBody struct {
-	refresh_token string
+	RefreshToken string
 }
 
 var connString string = "mongodb://127.0.0.1"
@@ -96,13 +97,26 @@ func access(w http.ResponseWriter, r *http.Request) {
 }
 
 func refresh(w http.ResponseWriter, r *http.Request) {
-	var refreshToken TokenFromBody
-	err := json.NewDecoder(r.Body).Decode(&refreshToken)
+
+	body, err := ioutil.ReadAll(r.Body)
+
 	if errCheck(err) {
 		return
 	}
 
-	decodedToken := decodeToken(refreshToken.refresh_token)
+	log.Println(string(body))
+
+	tokenFromBody := TokenFromBody{}
+	jsonErr := json.Unmarshal(body, &tokenFromBody)
+	if errCheck(jsonErr) {
+		return
+	}
+
+	log.Println("Refresh token received: " + tokenFromBody.RefreshToken)
+
+	decodedToken := decodeToken(tokenFromBody.RefreshToken)
+
+	log.Println("Token decoded: " + decodedToken)
 
 	os.Setenv("REFRESH_SECRET", "mcmvmkmsdnfsdmfdsjf")
 	token, err := jwt.Parse(decodedToken, func(token *jwt.Token) (interface{}, error) {
@@ -121,34 +135,34 @@ func refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	//Since token is valid, get the uuid:
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if ok && token.Valid {
-		refreshUuid, ok := claims["refresh_uuid"].(string) //convert the interface to string
+		refreshUuid, ok := claims["refresh_uuid"].(string)
 		if !ok {
 			_ = errCheck(err)
 			return
 		}
-		userId, err := strconv.ParseUint(fmt.Sprintf("%.f", claims["user_id"]), 10, 64)
-		if err != nil {
-			_ = errCheck(err)
+
+		userId, ok := claims["userGUID"].(string)
+		if !ok {
+			log.Println("can't get user_id")
 			return
 		}
-		//Delete the previous Refresh Token
+
 		deleted, delErr := deleteAuth(refreshUuid)
-		if delErr != nil || deleted == 0 { //if any goes wrong
+		if delErr != nil || deleted == 0 {
 			_ = errCheck(delErr)
 			return
 		}
-		//Create new pairs of refresh and access tokens
-		ts, createErr := createToken(string(userId))
+
+		ts, createErr := createToken(userId)
 		if createErr != nil {
 			_ = errCheck(createErr)
 			return
 		}
 
-		tokenToMgo := createDTO(ts, string(userId))
-		//save the tokens metadata to redis
+		tokenToMgo := createDTO(ts, userId)
+
 		saveErr := createAuth(tokenToMgo.UserGuid, tokenToMgo)
 		if saveErr != nil {
 			_ = errCheck(createErr)
